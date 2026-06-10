@@ -606,13 +606,13 @@ rasterize_conductivity3.LAScatalog = function(las, centerline, dtm = NULL, water
 }
 
 
-rasterize_conductivity4 <- function(las, centerline, dtm = NULL, water = NULL, param = alsroads_default_parameters2, dl_model= NULL)
+rasterize_conductivity4 <- function(las, centerline, dtm = NULL, water = NULL, param = alsroads_default_parameters2, dl_model= NULL, dl_pred_raster = NULL)
 {
   UseMethod("rasterize_conductivity4", las)
 }
 
 #' @export
-rasterize_conductivity4 <- function(las, centerline, dtm = NULL, water = NULL, param = alsroads_default_parameters2, dl_model= NULL)
+rasterize_conductivity4 <- function(las, centerline, dtm = NULL, water = NULL, param = alsroads_default_parameters2, dl_model= NULL, dl_pred_raster = NULL)
 {
   use_intensity <- "Intensity" %in% names(las)
   display <- getOption("ALSroads.debug.finding")
@@ -963,19 +963,54 @@ rasterize_conductivity4 <- function(las, centerline, dtm = NULL, water = NULL, p
   u <- raster::mask(u, f)
   # u <- reclassify(u, cbind(NA, 0))
   # u[[11]] = 0
-  tiles = tile_raster(terra::rast(u) ,  target_size = 512)
-  prediction_tiles <- list()
+  # tiles = tile_raster(terra::rast(u) ,  target_size = 512)
+  # prediction_tiles <- list()
+  #
+  # for (i in 1:length(tiles$tiles)) {
+  #   cat("Processing tile", i, "of", length(tiles$tiles), "\n")
+  #
+  #   prediction_tiles[[i]] <- process_tile(tiles$tiles[[i]], dl_model)
+  # }
+  # combined <- terra::mosaic(terra::sprc(prediction_tiles))
+  # aligned <- terra::resample(combined, terra::rast(u), method = "near")
+  # result <- terra::mask(terra::crop(aligned, terra::rast(u[[3]])), terra::rast(u[[3]])) + 0.05
+  # r = raster::raster(result) * sigma
+  # r = r/raster::cellStats(r, stat = 'max')
+  # --- START REPLACEMENT (paste over the DL inference block) ---
+  rasterize_conductivity4_dl_block_REPLACEMENT <- function() {
+    # This is the new DL inference block to replace in rasterize_conductivity4.LAS
 
-  for (i in 1:length(tiles$tiles)) {
-    cat("Processing tile", i, "of", length(tiles$tiles), "\n")
+    if (!is.null(dl_pred_raster)) {
+      # --- Fast path: use precomputed DL prediction ---
+      # dl_pred_raster covers the full road-buffer area.
+      # Just crop it to the current road's extent and align to the metric stack.
+      if (is.character(dl_pred_raster))
+        dl_pred_raster <- raster::raster(dl_pred_raster)
 
-    prediction_tiles[[i]] <- process_tile(tiles$tiles[[i]], dl_model)
+      pred_crop  <- raster::crop(dl_pred_raster, raster::extent(raster::raster(u[[1]])))
+      result_r   <- raster::resample(pred_crop, raster::raster(u[[1]]), method = "ngb")
+      result_r[is.na(result_r)] <- 0.05
+      result     <- terra::rast(result_r) + 0.05
+
+    } else {
+      # --- Original path: run DL model tile by tile ---
+      tiles            <- tile_raster(terra::rast(u), target_size = 512)
+      prediction_tiles <- list()
+      for (i in 1:length(tiles$tiles)) {
+        cat("Processing tile", i, "of", length(tiles$tiles), "\n")
+        prediction_tiles[[i]] <- process_tile(tiles$tiles[[i]], dl_model)
+      }
+      combined <- terra::mosaic(terra::sprc(prediction_tiles))
+      aligned  <- terra::resample(combined, terra::rast(u), method = "near")
+      result   <- terra::mask(terra::crop(aligned, terra::rast(u[[3]])),
+                              terra::rast(u[[3]])) + 0.05
+    }
+
+    r <- raster::raster(result) * sigma
+    r <- r / raster::cellStats(r, stat = "max")
+    # (the rest of the function — layers <- raster::stack(...) — stays unchanged)
   }
-  combined <- terra::mosaic(terra::sprc(prediction_tiles))
-  aligned <- terra::resample(combined, terra::rast(u), method = "near")
-  result <- terra::mask(terra::crop(aligned, terra::rast(u[[3]])), terra::rast(u[[3]])) + 0.05
-  r = raster::raster(result) * sigma
-  r = r/raster::cellStats(r, stat = 'max')
+
   layers <- raster::stack(dtm2, slope2, roughness2, chm2, d2)
   names(layers) <- c("hillshade", "slope", "roughness", "chm", "density")
 
@@ -984,7 +1019,7 @@ rasterize_conductivity4 <- function(las, centerline, dtm = NULL, water = NULL, p
 }
 
 #' @export
-rasterize_conductivity4.LAScluster = function(las, centerline, dtm = NULL, water = NULL, param = alsroads_default_parameters2, dl_model= NULL)
+rasterize_conductivity4.LAScluster = function(las, centerline, dtm = NULL, water = NULL, param = alsroads_default_parameters2, dl_model= NULL, dl_pred_raster = NULL)
 {
   x <- lidR::readLAS(las)
   if (lidR::is.empty(x)) return(NULL)
@@ -1574,3 +1609,200 @@ reassemble_predictions <- function(prediction_tiles, tile_coords, original_raste
   return(result)
 }
 
+rasterize_conductivity4_precompute <- function(ctg,
+                                               roads,
+                                               dtm,
+                                               dl_model,
+                                               water     = NULL,
+                                               param     = alsroads_default_parameters2,
+                                               out_tif   = file.path(tempdir(), "dl_prediction.tif"),
+                                               tmp_dir   = file.path(tempdir(), "dl_chunks"),
+                                               chunk_buffer = 50) {
+
+  dir.create(tmp_dir, showWarnings = FALSE, recursive = TRUE)
+  message("=== Precomputing DL prediction raster over road buffers ===")
+  message("Temporary chunks: ", tmp_dir)
+  message("Final output:     ", out_tif)
+
+  # --- Build area of interest: union of all road buffers ---
+  road_buf  <- sf::st_buffer(roads, param$extraction$road_buffer)
+  aoi       <- sf::st_union(road_buf)
+  aoi       <- sf::st_transform(aoi, sf::st_crs(ctg))
+
+  # --- Clip catalog to AOI so we only process relevant tiles ---
+  ctg_aoi   <- lidR::clip_roi(ctg, aoi)  # returns a LAScatalog subset
+
+  # --- catalog_apply options ---
+  # chunk_size = 0 means one chunk per original LAS file (most natural split)
+  lidR::opt_chunk_size(ctg_aoi)   <- 0
+  lidR::opt_chunk_buffer(ctg_aoi) <- chunk_buffer
+  lidR::opt_select(ctg_aoi)       <- "xyzciap"
+  lidR::opt_progress(ctg_aoi)     <- TRUE
+
+  options <- list(
+    need_buffer      = TRUE,
+    drop_null        = TRUE,
+    raster_alignment = lidR:::raster_alignment(1),
+    automerge        = FALSE   # we merge manually below
+  )
+
+  # --- Per-chunk worker: compute 9-band stack + DL inference ---
+  # NOTE: dl_model is a reticulate Python object — it lives in the main session.
+  # catalog_apply runs sequentially by default (lidR::opt_cores = 1), so the
+  # main session's Python environment is available.
+  .dl_chunk <- function(las_cluster, dtm, water, param, dl_model, tmp_dir) {
+
+    las <- lidR::readLAS(las_cluster)
+    if (lidR::is.empty(las)) return(NULL)
+
+    # --- DTM crop ---
+    bb       <- lidR::st_bbox(las)
+    dtm_c    <- raster::crop(dtm, raster::extent(bb))
+    res_dtm  <- round(raster::res(dtm_c)[1], 2)
+    if (res_dtm < 1) dtm_c <- raster::aggregate(dtm_c, fact = 1/res_dtm, fun = mean)
+    if (lidR:::raster_pkg(dtm_c) == "terra") dtm_c <- raster::raster(dtm_c)
+
+    # --- Water mask ---
+    mask_sp <- NULL
+    if (!is.null(water) && length(sf::st_geometry(water)) > 0) {
+      bbox_sf  <- sf::st_set_crs(suppressWarnings(sf::st_bbox(las)), sf::st_crs(water))
+      mask_sf  <- sf::st_crop(sf::st_geometry(water), bbox_sf)
+      if (length(mask_sf) > 0) {
+        las     <- lidR::classify_poi(las, lidR::LASWATER, roi = water)
+        mask_sp <- sf::as_Spatial(mask_sf)
+      }
+    }
+
+    nlas        <- lidR::normalize_height(las, dtm_c) |> suppressMessages() |> suppressWarnings()
+    density_pts <- nrow(las@data) / lidR::area(las)
+    w5          <- matrix(1, 5, 5)
+    use_intensity <- "Intensity" %in% names(las)
+
+    # --- DSM roughness ---
+    dsm           <- lidR::grid_canopy(nlas, dtm_c, lidR::p2r())
+    smooth_dsm    <- raster::focal(dsm, w5, mean)
+    roughness_dsm <- terra::terrain(dsm - smooth_dsm, v = "roughness", unit = "degrees")
+    if (density_pts < 10)
+      roughness_dsm <- terra::focal(roughness_dsm, w = w5,
+                                    fun = function(x) ifelse(is.na(x[13]), mean(x, na.rm=TRUE), x[13]),
+                                    na.policy = "omit", fillvalue = NA)
+
+    # --- Slope + DTM roughness ---
+    slope      <- terra::terrain(dtm_c, opt = "slope", unit = "degrees")
+    if (!is.null(mask_sp)) slope <- raster::mask(slope, mask_sp, inverse = TRUE)
+    smooth_dtm <- raster::focal(dtm_c, w5, mean)
+    roughness  <- terra::terrain(dtm_c - smooth_dtm, opt = "roughness", unit = "degrees")
+
+    # --- Sobel ---
+    sobl <- sobel.RasterLayer(slope)
+
+    # --- Intensity ---
+    irange <- dtm_c; irange[] <- 0
+    if (use_intensity) {
+      template2m <- raster::aggregate(dtm_c, fact = 1); template2m[] <- 0
+      irange <- intensity_range_by_flightline(las, template2m)
+      if (density_pts < 10)
+        irange <- terra::focal(irange, w = w5,
+                               fun = function(x) ifelse(is.na(x[13]), mean(x, na.rm=TRUE), x[13]),
+                               na.policy = "omit", fillvalue = NA)
+      if (!is.null(mask_sp)) irange <- raster::mask(irange, mask_sp, inverse = TRUE)
+    }
+
+    # --- CHM ---
+    chm <- lidR::grid_canopy(nlas, dtm_c, lidR::p2r())
+    if (density_pts < 10)
+      chm <- terra::focal(chm, w = w5,
+                          fun = function(x) ifelse(is.na(x[13]), mean(x, na.rm=TRUE), x[13]),
+                          na.policy = "omit", fillvalue = NA)
+
+    # --- Low points ---
+    lp <- density_lp_by_flightline(nlas, dtm_c)
+    if (density_pts < 10)
+      lp <- terra::focal(lp, w = w5,
+                         fun = function(x) ifelse(is.na(x[13]), mean(x, na.rm=TRUE), x[13]),
+                         na.policy = "omit", fillvalue = NA)
+    lp[is.na(lp)] <- 0
+    sigma_lp <- activation(lp, 0.2, "thresholds", asc = FALSE)
+
+    # --- Ground density ---
+    d <- density_gnd_by_flightline(las, sigma_lp, drop_angles = 0)
+    if (density_pts < 10)
+      d <- terra::focal(d, w = w5,
+                        fun = function(x) ifelse(is.na(x[13]), mean(x, na.rm=TRUE), x[13]),
+                        na.policy = "omit", fillvalue = NA)
+    d <- terra::focal(d, matrix(1,3,3), mean, na.rm = TRUE)
+    d[is.na(d)] <- 0
+    if (!is.null(mask_sp)) d <- raster::mask(d, mask_sp, inverse = TRUE, updatevalue = 0)
+
+    # --- Hillshade (DTM band) ---
+    dtm_t   <- terra::rast(dtm_c)
+    sl_r    <- terra::terrain(dtm_t, v = "slope",  unit = "radians")
+    asp_r   <- terra::terrain(dtm_t, v = "aspect", unit = "radians")
+    shades  <- lapply(c(0,45,90,135,180,225,270,315), function(a)
+      terra::shade(slope = sl_r, aspect = asp_r, angle = 45, direction = a))
+    dtm2    <- raster::raster(terra::app(terra::rast(shades), fun = mean, na.rm = TRUE))
+
+    # --- Resample all bands to hillshade reference grid ---
+    .agg <- function(r) raster::resample(raster::aggregate(r, fact = 1, fun = mean), dtm2)
+    slope2         <- .agg(slope)
+    roughness_dsm2 <- .agg(roughness_dsm)
+    roughness2     <- .agg(roughness)
+    sobl2          <- .agg(sobl)
+    irange2        <- .agg(irange)
+    chm2           <- .agg(chm)
+    lp2            <- .agg(lp)
+    d2             <- .agg(d)
+
+    u <- raster::stack(dtm2, slope2, roughness_dsm2, roughness2,
+                       sobl2, irange2, chm2, lp2, d2)
+    names(u) <- c("dtm","slope","roughness_dsm","roughness",
+                  "sobel","intensity","chm","low","density")
+
+    # --- DL inference ---
+    tiles_list     <- tile_raster(terra::rast(u), target_size = 512)
+    prediction_tiles <- lapply(seq_along(tiles_list$tiles), function(i)
+      process_tile(tiles_list$tiles[[i]], dl_model))
+
+    combined <- terra::mosaic(terra::sprc(prediction_tiles))
+    aligned  <- terra::resample(combined, terra::rast(u), method = "near")
+    result   <- terra::mask(terra::crop(aligned, terra::rast(u[[3]])), terra::rast(u[[3]]))
+    pred_r   <- raster::raster(result)
+
+    # --- Crop to non-buffered tile extent and save ---
+    pred_r <- lidR:::raster_crop(pred_r, lidR::st_bbox(las_cluster))
+
+    chunk_id  <- paste0(round(bb["xmin"]), "_", round(bb["ymin"]))
+    out_chunk <- file.path(tmp_dir, paste0("dl_chunk_", chunk_id, ".tif"))
+    raster::writeRaster(pred_r, out_chunk, overwrite = TRUE,
+                        options = c("COMPRESS=LZW","TILED=YES"))
+    return(out_chunk)
+  }
+
+  # --- Run sequentially via catalog_apply (Python lives in main session) ---
+  chunk_paths <- lidR::catalog_apply(
+    ctg_aoi, .dl_chunk,
+    dtm      = dtm,
+    water    = water,
+    param    = param,
+    dl_model = dl_model,
+    tmp_dir  = tmp_dir,
+    .options = options
+  )
+
+  # --- Mosaic all chunks into one raster ---
+  chunk_paths <- unlist(chunk_paths)
+  chunk_paths <- chunk_paths[!is.null(chunk_paths) & file.exists(chunk_paths)]
+
+  message("Mosaicking ", length(chunk_paths), " chunks into ", out_tif)
+  chunk_rasters <- lapply(chunk_paths, raster::raster)
+  if (length(chunk_rasters) == 1) {
+    mosaic_r <- chunk_rasters[[1]]
+  } else {
+    mosaic_r <- do.call(raster::mosaic, c(chunk_rasters, fun = mean))
+  }
+  raster::writeRaster(mosaic_r, out_tif, overwrite = TRUE,
+                      options = c("COMPRESS=LZW","TILED=YES","BIGTIFF=YES"))
+
+  message("=== DL prediction raster saved to: ", out_tif, " ===")
+  invisible(out_tif)
+}

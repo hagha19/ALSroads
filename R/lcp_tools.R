@@ -10,7 +10,7 @@
 #' @param list. parameters
 #'
 #' @noRd
-least_cost_path = function(las, centerline, dtm, conductivity, water, param,dl_model, ...)
+least_cost_path = function(las, centerline, dtm, conductivity, water, param,dl_model,dl_pred_raster = NULL, ...)
 {
   display <- getOption("ALSroads.debug.finding")
   if (is.null(dtm) && is.null(conductivity)) stop("'dtm' and 'conductivity' cannot be both NULL", call. = FALSE)
@@ -55,7 +55,7 @@ least_cost_path = function(las, centerline, dtm, conductivity, water, param,dl_m
     verbose("Computing conductivity maps...\n")
     dots = list(...)
     dots = unlist(dots, recursive = TRUE)
-    result <- rasterize_conductivity4(las, centerline, dtm = dtm, param = param, dl_model = dl_model)
+    result <- rasterize_conductivity4(las, centerline, dtm = dtm, param = param, dl_model = dl_model, dl_pred_raster = dl_pred_raster)
     conductivity     <- result[[1]]
     layers_lidar    <- result[[2]]
   }

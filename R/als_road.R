@@ -81,7 +81,7 @@
 #' @useDynLib ALSroads, .registration = TRUE
 #' @import data.table
 measure_road = function(ctg, centerline, dtm = NULL, conductivity = NULL, water = NULL, param = alsroads_default_parameters,
-                        return_all = NULL, return_stack = NULL, dl_model = NULL, ...)
+                        return_all = NULL, return_stack = NULL, dl_model = NULL,dl_pred_raster = NULL, ...)
 {
   # Plenty of checks before to run anything
   dots <- list(...)
@@ -168,7 +168,7 @@ measure_road = function(ctg, centerline, dtm = NULL, conductivity = NULL, water 
     roads <- lapply(seq_along(from), function(i) { lwgeom::st_linesubstring(centerline, from[i], to[i]) })
     roads <- do.call(rbind, roads)
 
-    res   <- measure_roads(ctg, roads, dtm, conductivity=conductivity, water=water, param=param, return_all=return_all , return_stack=return_stack, dl_model=dl_model)
+    res   <- measure_roads(ctg, roads, dtm, conductivity=conductivity, water=water, param=param, return_all=return_all , return_stack=return_stack, dl_model=dl_model, dl_pred_raster=dl_pred_raster)
     # geom  <- st_merge_line(res)
     #
     # # Because we split the line we have multiple independent results
@@ -211,7 +211,7 @@ measure_road = function(ctg, centerline, dtm = NULL, conductivity = NULL, water 
     dots$return_all=return_all
     dots$return_stack=return_stack
 
-    result <- least_cost_path(las, centerline, dtm, conductivity, water, param,dl_model, dots)
+    result <- least_cost_path(las, centerline, dtm, conductivity, water, param,dl_model, dl_pred_raster, dots)
     res1     <- result[[1]]
     layers_lidar    <- result[[2]]
     if (!is.null(res1$path)) {
@@ -414,7 +414,7 @@ measure_road = function(ctg, centerline, dtm = NULL, conductivity = NULL, water 
 
 #' @export
 #' @rdname measure_road
-measure_roads = function(ctg, roads, dtm, conductivity = NULL, water = NULL, param = alsroads_default_parameters,  return_all = NULL, return_stack = NULL, dl_model = NULL, ...)
+measure_roads = function(ctg, roads, dtm, conductivity = NULL, water = NULL, param = alsroads_default_parameters,  return_all = NULL, return_stack = NULL, dl_model = NULL,  dl_pred_raster = NULL,...)
 {
 
   alert_no_index(ctg)
@@ -429,7 +429,7 @@ measure_roads = function(ctg, roads, dtm, conductivity = NULL, water = NULL, par
       withCallingHandlers(
 
         measure_road(ctg, roads[j,], dtm, conductivity, water, param,
-                     return_all = return_all, return_stack = return_stack, dl_model = dl_model,Windex = FALSE, ...),
+                     return_all = return_all, return_stack = return_stack, dl_model = dl_model, dl_pred_raster = dl_pred_raster, Windex = FALSE, ...),
         warning = function(w) {
           warning(paste0("Warning in road ", j, ": ", conditionMessage(w)))
           invokeRestart("muffleWarning") # Suppress warning after handling
