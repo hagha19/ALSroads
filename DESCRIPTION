@@ -1,0 +1,39 @@
+Package: ALSroads
+Type: Package
+Title: Road alignment and measure from airborne LiDAR data for MFFP
+Version: 0.2.0
+Author: Jean-Romain Roussel
+Maintainer: Jean-Romain Roussel <jean-romain.roussel.1@ulaval.ca>
+Description: Functions to realign miss-positionned roads from a maintained map of roads 
+  and to compute some state metrics such as the state of the roads (exist, no longer exist)
+  as well as their width, drivable width, slope and so on.
+License: GPL-3
+Encoding: UTF-8
+Imports: 
+    lidR (>= 4.0.0),
+    sf,
+    zoo,
+    stats,
+    data.table,
+    dplyr,
+    raster,
+    terra,
+    lwgeom,
+    glue,
+    methods,
+    utils,
+    gdistance,
+    EBImage,
+    Matrix,
+    fasterize,
+    sp
+Suggests:
+    mapview,
+    leaflet,
+    viridis
+RoxygenNote: 7.3.2
+LinkingTo: 
+    Rcpp,
+    lidR
+Depends: 
+    R (>= 4.1.0)

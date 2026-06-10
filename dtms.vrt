@@ -1,0 +1,41 @@
+<VRTDataset rasterXSize="89350" rasterYSize="125900">
+  <SRS dataAxisToSRSAxisMapping="1,2">PROJCS["NAD83(CSRS98) / MTM zone 6",GEOGCS["NAD83(CSRS98)",DATUM["North_American_1983_CSRS",SPHEROID["GRS 1980",6378137,298.257222101004,AUTHORITY["EPSG","7019"]]],PRIMEM["Greenwich",0],UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]]],PROJECTION["Transverse_Mercator"],PARAMETER["latitude_of_origin",0],PARAMETER["central_meridian",-67.5],PARAMETER["scale_factor",0.9999],PARAMETER["false_easting",304800],PARAMETER["false_northing",0],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH]]</SRS>
+  <GeoTransform>  2.3370800000000000e+05,  1.0000000000000000e+00,  0.0000000000000000e+00,  5.6104360000000000e+06,  0.0000000000000000e+00, -1.0000000000000000e+00</GeoTransform>
+  <VRTRasterBand dataType="Float32" band="1">
+    <NoDataValue>-9999</NoDataValue>
+    <ColorInterp>Gray</ColorInterp>
+    <ComplexSource>
+      <SourceFilename relativeToVRT="0">D:/Demande_Lidar/dtm/MNT_22G11NO.tif</SourceFilename>
+      <SourceBand>1</SourceBand>
+      <SourceProperties RasterXSize="18362" RasterYSize="14233" DataType="Float32" BlockXSize="256" BlockYSize="256" />
+      <SrcRect xOff="0" yOff="0" xSize="18362" ySize="14233" />
+      <DstRect xOff="70942" yOff="97766" xSize="18362" ySize="14233" />
+      <NODATA>-9999</NODATA>
+    </ComplexSource>
+    <ComplexSource>
+      <SourceFilename relativeToVRT="0">D:/Demande_Lidar/dtm/MNT_22G11SO.tif</SourceFilename>
+      <SourceBand>1</SourceBand>
+      <SourceProperties RasterXSize="18408" RasterYSize="14232" DataType="Float32" BlockXSize="256" BlockYSize="256" />
+      <SrcRect xOff="0" yOff="0" xSize="18408" ySize="14232" />
+      <DstRect xOff="70942" yOff="111668" xSize="18408" ySize="14232" />
+      <NODATA>-9999</NODATA>
+    </ComplexSource>
+    <ComplexSource>
+      <SourceFilename relativeToVRT="0">D:/Demande_Lidar/dtm/MNT_22G12SE.tif</SourceFilename>
+      <SourceBand>1</SourceBand>
+      <SourceProperties RasterXSize="18408" RasterYSize="14232" DataType="Float32" BlockXSize="256" BlockYSize="256" />
+      <SrcRect xOff="0" yOff="0" xSize="18408" ySize="14232" />
+      <DstRect xOff="52834" yOff="111668" xSize="18408" ySize="14232" />
+      <NODATA>-9999</NODATA>
+    </ComplexSource>
+    <ComplexSource>
+      <SourceFilename relativeToVRT="0">D:/Demande_Lidar/dtm/MNT_22K09SO.tif</SourceFilename>
+      <SourceBand>1</SourceBand>
+      <SourceProperties RasterXSize="18177" RasterYSize="14413" DataType="Float32" BlockXSize="256" BlockYSize="256" />
+      <SrcRect xOff="0" yOff="0" xSize="18177" ySize="14413" />
+      <DstRect xOff="0" yOff="0" xSize="18177" ySize="14413" />
+      <NODATA>-9999</NODATA>
+    </ComplexSource>
+  </VRTRasterBand>
+  <OverviewList resampling="nearest">2 4 8 16</OverviewList>
+</VRTDataset>
