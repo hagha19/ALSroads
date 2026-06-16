@@ -90,6 +90,7 @@ measure_road = function(ctg, centerline, dtm = NULL, conductivity = NULL, water 
     water <- st_transform(water, st_crs(centerline))
   }
 
+
   lidR::opt_progress(ctg) <- getOption("ALSroads.debug.verbose")
   geometry_type_road <- sf::st_geometry_type(centerline)
   if (geometry_type_road != "LINESTRING") stop(glue::glue("Expecting LINESTRING geometry for 'centerline' but found {geometry_type_road} geometry instead."), call. = FALSE)
@@ -210,8 +211,8 @@ measure_road = function(ctg, centerline, dtm = NULL, conductivity = NULL, water 
     dots = list(...)
     dots$return_all=return_all
     dots$return_stack=return_stack
-
     result <- least_cost_path(las, centerline, dtm, conductivity, water, param,dl_model, dots)
+
     res1     <- result[[1]]
     layers_lidar    <- result[[2]]
     if (!is.null(res1$path)) {
@@ -291,7 +292,6 @@ measure_road = function(ctg, centerline, dtm = NULL, conductivity = NULL, water 
         vertices$CONDUCTIVITY[idx],
         na.rm = TRUE
       )
-
       slice_metrics <- road_measure(las, road_i, param)
       metrics       <- road_metrics(road_i, slice_metrics)
       metrics[["SCORE"]] <- road_score(metrics, param)
@@ -387,23 +387,23 @@ measure_road = function(ctg, centerline, dtm = NULL, conductivity = NULL, water 
     new_road <- dplyr::select(new_road, dplyr::any_of(keep_fields))
   }
 
-  # Hidden option for JF Bourdons
-  keep_class = dots$keep_class
-  if (is.null(keep_class))
-    keep_class = 4L
-  else
-    stopifnot(is.numeric(keep_class), length(keep_class) == 1)
-
-  mean_class <- mean(new_road$CLASS, na.rm = TRUE)
-  if (mean_class > keep_class)
-  {
-    new_road <- centerline
-    sf::st_crs(new_road) <- crs
-
-    verbose("Done (reverted to centerline)\n")
-    new_road <- rename_sf_column(new_road, centerline)
-    return(new_road)
-  }
+  # # Hidden option for JF Bourdons
+  # keep_class = dots$keep_class
+  # if (is.null(keep_class))
+  #   keep_class = 4L
+  # else
+  #   stopifnot(is.numeric(keep_class), length(keep_class) == 1)
+  #
+  # mean_class <- mean(new_road$CLASS, na.rm = TRUE)
+  # if (mean_class > keep_class)
+  # {
+  #   new_road <- centerline
+  #   sf::st_crs(new_road) <- crs
+  #
+  #   verbose("Done (reverted to centerline)\n")
+  #   new_road <- rename_sf_column(new_road, centerline)
+  #   return(new_road)
+  # }
 
   verbose("Done\n") ; cat("\n")
   new_road <- rename_sf_column(new_road, centerline)

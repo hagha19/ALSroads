@@ -71,7 +71,6 @@ slice_metrics = function(nlas_slice, param)
   pground_drive   <- NA   # The same but within the drivable zone (useless?)
   pzabove05_drive <- 0
   pzabove2_drive  <- 100
-
   if (n > 0)
   {
     n5            <- sum(road$Z < 5)
@@ -92,7 +91,40 @@ slice_metrics = function(nlas_slice, param)
     pzabove2_drive  <- round(nabove2 / n5 * 100, 1)
     pzabove05_drive <- round(nabove05 / n5 * 100, 1)
     pground_drive   <- round(nground / n * 100, 1)
+
+    # ── Vertical point distribution ──────────────────────────────────
+    # Compute fraction of points in each height stratum (within 0-5m only)
+    # Maintained road: most points near ground → low entropy
+    # Abandoned road:  points spread across strata → high entropy
+
+    if (n5 > 0) {
+
+      # Fraction in each stratum
+      p_ground_stratum <- sum(road$Z >= 0    & road$Z < 0.5) / n5  # ground level
+      p_shrub_stratum  <- sum(road$Z >= 0.5  & road$Z < 2.0) / n5  # shrub layer
+      p_mid_stratum    <- sum(road$Z >= 2.0  & road$Z < 5.0) / n5  # mid canopy
+
+      # Shannon entropy of the vertical distribution
+      # Low entropy  → points concentrated in one stratum → likely clear road
+      # High entropy → points spread across strata → likely abandoned/vegetated
+      probs   <- c(p_ground_stratum, p_shrub_stratum, p_mid_stratum)
+      probs   <- probs[probs > 0]   # log(0) undefined
+      entropy <- -sum(probs * log(probs))
+      # Maximum possible entropy for 3 strata = log(3) ≈ 1.099
+      # Normalise to 0-1
+      entropy_norm <- round(entropy / log(3), 3)
+
+      # Dominance: fraction of points at ground level
+      # High dominance → clear road surface
+      # Low dominance  → vegetation spreading through all heights
+      ground_dominance <- round(p_ground_stratum, 3)
+
+    } else {
+      entropy_norm     <- 1
+      ground_dominance <- 0
+    }
   }
+
 
   # Compute the elevation of the road
   zroad <- road_dtm[1]
@@ -114,6 +146,9 @@ slice_metrics = function(nlas_slice, param)
     rescue_edges = rescue_edges,
     drivable_edges = drivable_edges$edges,
     road_edges = road_edges,
+
+    entropy_norm     = entropy_norm,      # 0=all points in one stratum, 1=perfectly spread
+    ground_dominance = ground_dominance,   # fraction of points at ground level (0-0.5m)
 
     # More or less interesting metrics
     accotement_width = shoulders_width,
