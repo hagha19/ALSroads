@@ -37,6 +37,74 @@
 #'   color = c("red", "blue", "green"), map.type = "Esri.WorldImagery")
 #' leaflet::addTiles(m@map, url)
 #' @export
+#'
+snap_with_duplicate_ids <- function(corrected_roads, existing_roads, field = "OGF_ID", tolerance = 30) {
+
+  # ── Step 0: remove NULL / invalid rows ───────────────────────────
+  valid_geom   <- !sf::st_is_empty(corrected_roads) &
+    !is.na(sf::st_geometry(corrected_roads))
+  valid_id     <- !is.na(corrected_roads[[field]])
+  valid_length <- as.numeric(sf::st_length(corrected_roads)) > 0
+
+  valid_rows <- valid_geom & valid_id & valid_length
+
+  n_removed <- sum(!valid_rows)
+  if (n_removed > 0) {
+    message(sprintf(
+      "Removing %d invalid/NULL road(s) from corrected_roads before snapping.",
+      n_removed
+    ))
+    removed_ids <- corrected_roads[[field]][!valid_rows]
+    message("  Removed IDs: ", paste(unique(removed_ids), collapse = ", "))
+    corrected_roads <- corrected_roads[valid_rows, ]
+  }
+
+  existing_roads <- existing_roads[existing_roads[[field]] %in%
+                                     corrected_roads[[field]], ]
+
+  if (nrow(corrected_roads) == 0) {
+    warning("No valid roads remaining after removing NULL rows.")
+    return(list(roads = corrected_roads, warnings = NULL))
+  }
+
+  # ── Step 1: make IDs unique in corrected_roads ───────────────────
+  corrected_roads$OGF_ID_original <- corrected_roads[[field]]
+  corrected_roads[[field]] <- paste0(
+    corrected_roads[[field]], "_", seq_len(nrow(corrected_roads))
+  )
+
+  # ── Step 2: expand existing_roads to match ────────────────────────
+  existing_roads_expanded <- existing_roads[
+    match(corrected_roads$OGF_ID_original, existing_roads[[field]]),
+  ]
+  existing_roads_expanded[[field]] <- corrected_roads[[field]]
+
+  # ── Step 3: run snap ─────────────────────────────────────────────
+  result <- tryCatch(
+    st_snap_lines(
+      corrected_roads,
+      existing_roads_expanded,
+      field     = field,
+      tolerance = tolerance
+    ),
+    error = function(e) {
+      message("advanced_snap failed: ", e$message,
+              " — falling back to simple_snap")
+      list(
+        roads    = simple_snap(corrected_roads, tolerance)$roads,
+        warnings = NULL
+      )
+    }
+  )
+
+  # ── Step 4: restore original IDs ─────────────────────────────────
+  result$roads[[field]]        <- result$roads$OGF_ID_original
+  result$roads$OGF_ID_original <- NULL
+
+  return(result)
+}
+
+
 st_snap_lines = function(roads, ref, tolerance = 30, field = NULL, updatable = NULL)
 {
   if (missing(ref))

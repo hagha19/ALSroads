@@ -294,8 +294,8 @@ default_classification_param <- function() {
     entropy_good  = 0.30,   # clean road surface distribution
 
     # width_median: median drivable width in metres
-    width_bad     = 1.0,    # barely a track
-    width_good    = 6.0,    # wide logging road
+    width_bad     = 0.5,    # barely a track
+    width_good    = 5.0,    # wide logging road
 
     # lateral vegetation: pzabove05_drive - pzabove2_drive (shrubs at vehicle height)
     lateral_bad   = 40,     # % — heavily encroached
@@ -319,7 +319,7 @@ default_classification_param <- function() {
     # A road cannot be Class 1 if any single feature is catastrophic
     class1_min_each  = 60,   # every feature must exceed this for Class 1
     class2_min_each  = 30,   # every feature must exceed this for Class 2
-
+    class3_min_each  = 15,   # every feature must exceed this for Class 3
     # ── Width ─────────────────────────────────────────────────────
     min_half_width_m = 1.5,
 
@@ -360,8 +360,8 @@ score_features <- function(segment_metrics, corridor_vals, param) {
 
   f_width <- if (!is.na(width_raw)) {
     activation_score(width_raw,
-                     c(p$width_bad  %||% 1.0,
-                       p$width_good %||% 6.0),
+                     c(p$width_bad  %||% 0.5,
+                       p$width_good %||% 5.0),
                      asc = TRUE)   # wide = good
   } else 50
 
@@ -456,7 +456,8 @@ classify_road <- function(features,  param) {
     2L
 
   } else if (
-    composite >= (p$class3_min %||% 35)
+    composite >= (p$class3_min %||% 35) &&
+    all(f >= (p$class3_min_each %||% 15))
   ) {
     3L
 

@@ -261,24 +261,45 @@ measure_road = function(ctg, centerline, dtm = NULL, conductivity = NULL, water 
   if (!is.null(param$segment_class) &&
       as.numeric(sf::st_length(new_road)) >= as.numeric(param$segment_class))
   {
+
+    # segment_length <- param$segment_class
+    # total_len <- as.numeric(sf::st_length(new_road))
+    # seg_len   <- as.numeric(segment_length)
+    # ratio     <- seg_len / total_len
+    #
+    # starts <- seq(0, 1 - ratio, by = ratio)
+    # ends   <- seq(ratio, 1, by = ratio)
+    # ends[length(ends)] <- 1
+    #
+    # n      <- min(length(starts), length(ends))
+    # starts <- starts[1:n]
+    # ends   <- ends[1:n]
+    #
+    # segments_list <- mapply(function(f, t) {
+    #   lwgeom::st_linesubstring(new_road, from = f, to = t)
+    # }, starts, ends, SIMPLIFY = FALSE)
+    #
+    # road_segments <- do.call(rbind, segments_list)  segment_length <- param$segment_class
     segment_length <- param$segment_class
-    total_len <- as.numeric(sf::st_length(new_road))
-    seg_len   <- as.numeric(segment_length)
-    ratio     <- seg_len / total_len
+    seg_len        <- as.numeric(segment_length)
 
-    starts <- seq(0, 1 - ratio, by = ratio)
-    ends   <- seq(ratio, 1, by = ratio)
-    ends[length(ends)] <- 1
+    # ── New: split at nearest existing vertices ───────────────────
+    road_segments <- split_at_nearest_vertices(new_road, seg_len)
+    if (is.null(road_segments) || nrow(road_segments) == 0) {
+      warning("Vertex-based segmentation failed — falling back to parametric split")
+      # fallback to original approach
+      total_len <- as.numeric(sf::st_length(new_road))
+      ratio     <- seg_len / total_len
+      starts    <- seq(0, 1 - ratio, by = ratio)
+      ends      <- seq(ratio, 1, by = ratio)
+      ends[length(ends)] <- 1
+      n         <- min(length(starts), length(ends))
+      segments_list <- mapply(function(f, t) {
+        lwgeom::st_linesubstring(new_road, from = f, to = t)
+      }, starts[1:n], ends[1:n], SIMPLIFY = FALSE)
+      road_segments <- do.call(rbind, segments_list)
+    }
 
-    n      <- min(length(starts), length(ends))
-    starts <- starts[1:n]
-    ends   <- ends[1:n]
-
-    segments_list <- mapply(function(f, t) {
-      lwgeom::st_linesubstring(new_road, from = f, to = t)
-    }, starts, ends, SIMPLIFY = FALSE)
-
-    road_segments <- do.call(rbind, segments_list)
     results       <- vector("list", length = nrow(road_segments))
 
     for (i in seq_len(nrow(road_segments)))
@@ -293,7 +314,9 @@ measure_road = function(ctg, centerline, dtm = NULL, conductivity = NULL, water 
         na.rm = TRUE
       )
       slice_metrics <- road_measure(las, road_i, param)
-      metrics       <- road_metrics(road_i, slice_metrics)
+      # metrics       <- road_metrics(road_i, slice_metrics)
+      metrics <- road_metrics(road_i, slice_metrics)
+      class_result   <- road_class_full(road_i, metrics, slice_metrics, layers_lidar, param)
       metrics[["SCORE"]] <- road_score(metrics, param)
       metrics[["CLASS"]] <- get_class(metrics[["SCORE"]])
 
@@ -585,3 +608,78 @@ rename_sf_column <- function(x,as)
   x
 }
 
+#' Split a road line at existing vertices closest to target distances
+#'
+#' Instead of cutting at arbitrary parametric positions, finds the nearest
+#' existing vertex to each target distance and splits there.
+#' Never creates new points — only uses points that already exist in the geometry.
+#'
+#' @param road      sf LINESTRING
+#' @param seg_len   target segment length in metres
+#' @return sf object with one row per segment
+split_at_nearest_vertices <- function(road, seg_len) {
+
+  # ── Extract all existing vertices with cumulative distances ──────
+  coords <- sf::st_coordinates(road)[, c("X", "Y")]
+  n_pts  <- nrow(coords)
+
+  # Cumulative distance along the line between vertices
+  diffs <- sqrt(diff(coords[, "X"])^2 + diff(coords[, "Y"])^2)
+  cum_dist <- c(0, cumsum(diffs))
+  total_len <- cum_dist[n_pts]
+
+  # ── Find target distances (every seg_len metres) ─────────────────
+  targets <- seq(0, total_len, by = seg_len)
+
+  # Always include start and end
+  targets[1]            <- 0
+  targets[length(targets)] <- total_len
+
+  # ── For each target distance find the nearest existing vertex ─────
+  snap_indices <- sapply(targets, function(d) {
+    which.min(abs(cum_dist - d))
+  })
+
+  # Remove duplicates (can happen if two targets snap to same vertex)
+  snap_indices <- unique(snap_indices)
+
+  # Always include first and last vertex
+  if (snap_indices[1] != 1) snap_indices <- c(1, snap_indices)
+  if (snap_indices[length(snap_indices)] != n_pts) {
+    snap_indices <- c(snap_indices, n_pts)
+  }
+
+  # ── Build segments between consecutive snap points ────────────────
+  segments <- vector("list", length(snap_indices) - 1)
+
+  for (i in seq_len(length(snap_indices) - 1)) {
+    idx_from <- snap_indices[i]
+    idx_to   <- snap_indices[i + 1]
+
+    # Need at least 2 points to make a line
+    if (idx_to <= idx_from) next
+
+    seg_coords <- coords[idx_from:idx_to, , drop = FALSE]
+
+    if (nrow(seg_coords) < 2) next
+
+    segments[[i]] <- sf::st_linestring(seg_coords)
+  }
+
+  # Remove NULLs
+  segments <- segments[!sapply(segments, is.null)]
+
+  if (length(segments) == 0) return(NULL)
+
+  # ── Rebuild as sf with same attributes as input road ──────────────
+  geom_sfc <- sf::st_sfc(segments, crs = sf::st_crs(road))
+
+  road_attr <- sf::st_drop_geometry(road)
+  road_segments <- sf::st_sf(
+    road_attr[rep(1, length(segments)), , drop = FALSE],
+    geometry  = geom_sfc,
+    row.names = NULL
+  )
+
+  return(road_segments)
+}
