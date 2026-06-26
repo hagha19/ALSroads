@@ -258,119 +258,242 @@ measure_road = function(ctg, centerline, dtm = NULL, conductivity = NULL, water 
   # We now have an accurate road (hopefully). We can make measurement on it.
   # This step extracts the width profiles of the road, the percentage of points
   # and relocate more accurately the centerline.
+  # ── Always process whole road first ──────────────────────────────
+  slice_metrics <- road_measure(las, new_road, param)
+
+  # Spline adjustment on whole road
+  if (relocate && nrow(slice_metrics) > 4L) {
+    spline <- adjust_spline(slice_metrics)
+    spline <- sf::st_simplify(spline, dTolerance = 1)
+    spline <- sf::st_set_crs(spline, crs)
+    sf::st_geometry(new_road) <- spline
+  }
+
+  # Whole road metrics and classification
+  metrics      <- road_metrics(new_road, slice_metrics)
+  class_result <- road_class_full(new_road, metrics, slice_metrics, layers_lidar, param)
+  metrics[["CLASS"]] <- class_result$class
+  metrics[["SCORE"]] <- class_result$score
+
+  # ── Segment the refined road if param$segment_class is given ─────
   if (!is.null(param$segment_class) &&
       as.numeric(sf::st_length(new_road)) >= as.numeric(param$segment_class))
   {
+    seg_len       <- as.numeric(param$segment_class)
+    total_len     <- as.numeric(sf::st_length(new_road))
 
-    # segment_length <- param$segment_class
-    # total_len <- as.numeric(sf::st_length(new_road))
-    # seg_len   <- as.numeric(segment_length)
-    # ratio     <- seg_len / total_len
-    #
-    # starts <- seq(0, 1 - ratio, by = ratio)
-    # ends   <- seq(ratio, 1, by = ratio)
-    # ends[length(ends)] <- 1
-    #
-    # n      <- min(length(starts), length(ends))
-    # starts <- starts[1:n]
-    # ends   <- ends[1:n]
-    #
-    # segments_list <- mapply(function(f, t) {
-    #   lwgeom::st_linesubstring(new_road, from = f, to = t)
-    # }, starts, ends, SIMPLIFY = FALSE)
-    #
-    # road_segments <- do.call(rbind, segments_list)  segment_length <- param$segment_class
-    segment_length <- param$segment_class
-    seg_len        <- as.numeric(segment_length)
+    # ── Split road geometry at existing vertices ───────────────────
+    # new_road geometry is NOT changed — only split into pieces
+    road_segments <- split_road_with_vertices(new_road, seg_len)
 
-    # ── New: split at nearest existing vertices ───────────────────
-    road_segments <- split_at_nearest_vertices(new_road, seg_len)
-    if (is.null(road_segments) || nrow(road_segments) == 0) {
-      warning("Vertex-based segmentation failed — falling back to parametric split")
-      # fallback to original approach
-      total_len <- as.numeric(sf::st_length(new_road))
-      ratio     <- seg_len / total_len
-      starts    <- seq(0, 1 - ratio, by = ratio)
-      ends      <- seq(ratio, 1, by = ratio)
-      ends[length(ends)] <- 1
-      n         <- min(length(starts), length(ends))
-      segments_list <- mapply(function(f, t) {
-        lwgeom::st_linesubstring(new_road, from = f, to = t)
-      }, starts[1:n], ends[1:n], SIMPLIFY = FALSE)
-      road_segments <- do.call(rbind, segments_list)
-    }
+    results <- vector("list", nrow(road_segments))
 
-    results       <- vector("list", length = nrow(road_segments))
+    for (i in seq_len(nrow(road_segments))) {
 
-    for (i in seq_len(nrow(road_segments)))
-    {
       road_i <- road_segments[i, ]
 
-      endpoints <- sf::st_cast(road_i, "POINT")
-      idx       <- sf::st_nearest_feature(endpoints, vertices)
+      # ── Compute distance range of this segment along the whole road
+      seg_cum_start <- (i - 1) * seg_len
+      seg_cum_end   <- min(i * seg_len, total_len)
 
-      road_i$CONDUCTIVITY <- mean(
-        vertices$CONDUCTIVITY[idx],
-        na.rm = TRUE
-      )
-      slice_metrics <- road_measure(las, road_i, param)
-      # metrics       <- road_metrics(road_i, slice_metrics)
-      metrics <- road_metrics(road_i, slice_metrics)
-      class_result   <- road_class_full(road_i, metrics, slice_metrics, layers_lidar, param)
-      metrics[["SCORE"]] <- road_score(metrics, param)
-      metrics[["CLASS"]] <- get_class(metrics[["SCORE"]])
+      # ── Subset slice_metrics that fall within this segment ────────
+      slice_i <- slice_metrics[
+        as.numeric(slice_metrics$distance_to_start) >= seg_cum_start &
+          as.numeric(slice_metrics$distance_to_start) <= seg_cum_end, ]
 
-      # Add a segment index so you can trace which segment is which
-      metrics[["SEG_ID"]] <- i
-
-      ngeom         <- attr(road_i, "sf_column")
-      new_geometry  <- sf::st_geometry(road_i)
-
-      attribute_table <- sf::st_drop_geometry(centerline)
-      if ("length_m" %in% names(attribute_table)) {
-        attribute_table["length_m"] <- segment_length
+      # Fallback if no slices land in this segment
+      if (nrow(slice_i) == 0) {
+        # Find nearest slice to segment midpoint
+        mid <- (seg_cum_start + seg_cum_end) / 2
+        nearest_idx <- which.min(abs(
+          as.numeric(slice_metrics$distance_to_start) - mid
+        ))
+        slice_i <- slice_metrics[nearest_idx, ]
       }
-      attribute_table <- cbind(attribute_table, metrics)
-      attribute_table[[ngeom]] <- new_geometry
 
-      road_i <- sf::st_as_sf(attribute_table)
-      sf::st_crs(road_i) <- crs
+      # ── Conductivity from vertices ────────────────────────────────
+      endpoints       <- sf::st_cast(road_i, "POINT")
+      idx             <- sf::st_nearest_feature(endpoints, vertices)
+      road_i$CONDUCTIVITY <- mean(vertices$CONDUCTIVITY[idx], na.rm = TRUE)
 
-      results[[i]] <- cbind(road_i, metrics)
+      # ── Classify this segment using its subset of slice_metrics ───
+      metrics_i        <- road_metrics(road_i, slice_i)
+      class_result_i   <- road_class_full(road_i, metrics_i, slice_i,
+                                          layers_lidar, param)
+      metrics_i[["CLASS"]]  <- class_result_i$class
+      metrics_i[["SCORE"]]  <- class_result_i$score
+      metrics_i[["SEG_ID"]] <- i
+
+      # ── Build output row — geometry comes from road_i (subset of new_road)
+      ngeom           <- attr(road_i, "sf_column")
+      attribute_table <- sf::st_drop_geometry(centerline)
+
+      if ("length_m" %in% names(attribute_table)) {
+        attribute_table["length_m"] <- as.numeric(sf::st_length(road_i))
+      }
+
+      attribute_table[[ngeom]] <- sf::st_geometry(road_i)
+      attribute_table          <- cbind(attribute_table, metrics_i)
+      road_i                   <- sf::st_as_sf(attribute_table)
+      sf::st_crs(road_i)       <- crs
+      results[[i]]             <- road_i
     }
 
-    # --- Simply bind all segments — no grouping, no averaging ---
     new_road <- do.call(rbind, results)
 
-    # Optional: create a unique ID per segment if OGF_ID or ROADID_unique exists
     if ("OGF_ID" %in% names(new_road)) {
       new_road$OGF_ID <- paste0(new_road$OGF_ID, "_", new_road$SEG_ID)
     }
-    if ("ROADID_unique" %in% names(new_road)) {
-      new_road$ROADID_unique <- paste0(new_road$ROADID_unique, "_", new_road$SEG_ID)
-    }
-  } else {
 
-    slice_metrics <- road_measure(las, new_road, param)
+    keep_fields <- c(
+      "geometry", "ROADWIDTH", "DRIVABLEWIDTH", "PERCABOVEROAD",
+      "SHOULDERS", "SINUOSITY", "CONDUCTIVITY", "OGF_ID",
+      "SCORE", "CLASS", "SEG_ID"
+    )
+    if ("length_m"      %in% names(new_road)) keep_fields <- c(keep_fields, "length_m")
+    if ("ROADID_unique" %in% names(new_road)) keep_fields <- c(keep_fields, "ROADID_unique")
+    new_road <- dplyr::select(new_road, dplyr::any_of(keep_fields))
 
-    # Smooth the centerline using a spline adjustment
-    if (relocate && nrow(slice_metrics) > 4L)
-    {
-      spline <- adjust_spline(slice_metrics)
-      spline <- sf::st_simplify(spline, dTolerance = 1)
-      spline <- sf::st_set_crs(spline, crs)
-      sf::st_geometry(new_road) <- spline
-    }
-
-
-    metrics <- road_metrics(new_road, slice_metrics)
-    class_result   <- road_class_full(new_road, metrics, slice_metrics, layers_lidar, param)
-    metrics[["CLASS"]] = class_result$class
-    metrics[["SCORE"]] = class_result$score
-    #
-    # metrics[["SCORE"]] <- road_score(metrics, param)
-    # metrics[["CLASS"]] <- get_class(metrics[["SCORE"]])
   }
+  # if (!is.null(param$segment_class) &&
+  #     as.numeric(sf::st_length(new_road)) >= as.numeric(param$segment_class))
+  # {
+  #
+  #   # segment_length <- param$segment_class
+  #   # total_len <- as.numeric(sf::st_length(new_road))
+  #   # seg_len   <- as.numeric(segment_length)
+  #   # ratio     <- seg_len / total_len
+  #   #
+  #   # starts <- seq(0, 1 - ratio, by = ratio)
+  #   # ends   <- seq(ratio, 1, by = ratio)
+  #   # ends[length(ends)] <- 1
+  #   #
+  #   # n      <- min(length(starts), length(ends))
+  #   # starts <- starts[1:n]
+  #   # ends   <- ends[1:n]
+  #   #
+  #   # segments_list <- mapply(function(f, t) {
+  #   #   lwgeom::st_linesubstring(new_road, from = f, to = t)
+  #   # }, starts, ends, SIMPLIFY = FALSE)
+  #   #
+  #   # road_segments <- do.call(rbind, segments_list)  segment_length <- param$segment_class
+  #   segment_length <- param$segment_class
+  #   seg_len        <- as.numeric(segment_length)
+  #   browser()
+  #   # ── New: split at nearest existing vertices ───────────────────
+  #   road_segments <- split_road_with_vertices(new_road, seg_len)
+  #
+  #   browser()
+  #
+  #   if (is.null(road_segments) || nrow(road_segments) == 0) {
+  #     warning("Vertex-based segmentation failed — falling back to parametric split")
+  #     # fallback to original approach
+  #     total_len <- as.numeric(sf::st_length(new_road))
+  #     ratio     <- seg_len / total_len
+  #     starts    <- seq(0, 1 - ratio, by = ratio)
+  #     ends      <- seq(ratio, 1, by = ratio)
+  #     ends[length(ends)] <- 1
+  #     n         <- min(length(starts), length(ends))
+  #     segments_list <- mapply(function(f, t) {
+  #       lwgeom::st_linesubstring(new_road, from = f, to = t)
+  #     }, starts[1:n], ends[1:n], SIMPLIFY = FALSE)
+  #     road_segments <- do.call(rbind, segments_list)
+  #   }
+  #
+  #   results       <- vector("list", length = nrow(road_segments))
+  #
+  #   for (i in seq_len(nrow(road_segments)))
+  #   {
+  #     road_i <- road_segments[i, ]
+  #
+  #     endpoints <- sf::st_cast(road_i, "POINT")
+  #     idx       <- sf::st_nearest_feature(endpoints, vertices)
+  #
+  #     road_i$CONDUCTIVITY <- mean(
+  #       vertices$CONDUCTIVITY[idx],
+  #       na.rm = TRUE
+  #     )
+  #     slice_metrics <- road_measure(las, road_i, param)
+  #     # metrics       <- road_metrics(road_i, slice_metrics)
+  #     metrics <- road_metrics(road_i, slice_metrics)
+  #     class_result   <- road_class_full(road_i, metrics, slice_metrics, layers_lidar, param)
+  #     metrics[["SCORE"]] <- class_result$score
+  #     metrics[["CLASS"]] <- class_result$class
+  #
+  #     # Add a segment index so you can trace which segment is which
+  #     metrics[["SEG_ID"]] <- i
+  #
+  #     ngeom         <- attr(road_i, "sf_column")
+  #     new_geometry  <- sf::st_geometry(road_i)
+  #
+  #     attribute_table <- sf::st_drop_geometry(centerline)
+  #     if ("length_m" %in% names(attribute_table)) {
+  #       attribute_table["length_m"] <- segment_length
+  #     }
+  #     attribute_table <- cbind(attribute_table, metrics)
+  #     attribute_table[[ngeom]] <- new_geometry
+  #
+  #     road_i <- sf::st_as_sf(attribute_table)
+  #     sf::st_crs(road_i) <- crs
+  #
+  #     results[[i]] <- cbind(road_i, metrics)
+  #   }
+  #
+  #   # --- Simply bind all segments — no grouping, no averaging ---
+  #   new_road <- do.call(rbind, results)
+  #
+  #   # Optional: create a unique ID per segment if OGF_ID or ROADID_unique exists
+  #   if ("OGF_ID" %in% names(new_road)) {
+  #     new_road$OGF_ID <- paste0(new_road$OGF_ID, "_", new_road$SEG_ID)
+  #   }
+  #   if ("ROADID_unique" %in% names(new_road)) {
+  #     new_road$ROADID_unique <- paste0(new_road$ROADID_unique, "_", new_road$SEG_ID)
+  #   }
+  #
+  #   keep_fields <- c(
+  #     "geometry",
+  #     "ROADWIDTH",
+  #     "DRIVABLEWIDTH",
+  #     "PERCABOVEROAD",
+  #     "SHOULDERS",
+  #     "SINUOSITY",
+  #     "CONDUCTIVITY",
+  #     "OGF_ID",
+  #     "SCORE",
+  #     "CLASS"
+  #   )
+  #
+  #   if ("length_m" %in% names(new_road)) {
+  #     keep_fields <- c(keep_fields, "length_m")
+  #   }
+  #
+  #   if ("ROADID_unique" %in% names(new_road)) {
+  #     keep_fields <- c(keep_fields, "ROADID_unique")
+  #   }
+  #
+  #   new_road <- dplyr::select(new_road, dplyr::any_of(keep_fields))
+  # } else {
+  #
+  #   slice_metrics <- road_measure(las, new_road, param)
+  #
+  #   # Smooth the centerline using a spline adjustment
+  #   if (relocate && nrow(slice_metrics) > 4L)
+  #   {
+  #     spline <- adjust_spline(slice_metrics)
+  #     spline <- sf::st_simplify(spline, dTolerance = 1)
+  #     spline <- sf::st_set_crs(spline, crs)
+  #     sf::st_geometry(new_road) <- spline
+  #   }
+  #
+  #
+  #   metrics <- road_metrics(new_road, slice_metrics)
+  #   class_result   <- road_class_full(new_road, metrics, slice_metrics, layers_lidar, param)
+  #   metrics[["CLASS"]] = class_result$class
+  #   metrics[["SCORE"]] = class_result$score
+  #   #
+  #   # metrics[["SCORE"]] <- road_score(metrics, param)
+  #   # metrics[["CLASS"]] <- get_class(metrics[["SCORE"]])
+  # }
   is_single <- nrow(new_road) == 1L
   if (is_single)
   {
@@ -409,24 +532,6 @@ measure_road = function(ctg, centerline, dtm = NULL, conductivity = NULL, water 
 
     new_road <- dplyr::select(new_road, dplyr::any_of(keep_fields))
   }
-
-  # # Hidden option for JF Bourdons
-  # keep_class = dots$keep_class
-  # if (is.null(keep_class))
-  #   keep_class = 4L
-  # else
-  #   stopifnot(is.numeric(keep_class), length(keep_class) == 1)
-  #
-  # mean_class <- mean(new_road$CLASS, na.rm = TRUE)
-  # if (mean_class > keep_class)
-  # {
-  #   new_road <- centerline
-  #   sf::st_crs(new_road) <- crs
-  #
-  #   verbose("Done (reverted to centerline)\n")
-  #   new_road <- rename_sf_column(new_road, centerline)
-  #   return(new_road)
-  # }
 
   verbose("Done\n") ; cat("\n")
   new_road <- rename_sf_column(new_road, centerline)
@@ -617,69 +722,49 @@ rename_sf_column <- function(x,as)
 #' @param road      sf LINESTRING
 #' @param seg_len   target segment length in metres
 #' @return sf object with one row per segment
-split_at_nearest_vertices <- function(road, seg_len) {
+split_road_with_vertices <- function(road, seg_len) {
 
-  # ── Extract all existing vertices with cumulative distances ──────
-  coords <- sf::st_coordinates(road)[, c("X", "Y")]
-  n_pts  <- nrow(coords)
+  total_len <- as.numeric(sf::st_length(road))
+  ratio     <- seg_len / total_len
 
-  # Cumulative distance along the line between vertices
-  diffs <- sqrt(diff(coords[, "X"])^2 + diff(coords[, "Y"])^2)
+  # ── Parametric split points ───────────────────────────────────────
+  starts <- seq(0, 1 - ratio, by = ratio)
+  ends   <- seq(ratio, 1, by = ratio)
+  ends[length(ends)] <- 1
+  n      <- min(length(starts), length(ends))
+  starts <- starts[1:n]
+  ends   <- ends[1:n]
+
+  # ── Get all original vertices with their parametric positions ─────
+  coords   <- sf::st_coordinates(road)[, c("X", "Y")]
+  n_pts    <- nrow(coords)
+  diffs    <- sqrt(diff(coords[, "X"])^2 + diff(coords[, "Y"])^2)
   cum_dist <- c(0, cumsum(diffs))
-  total_len <- cum_dist[n_pts]
+  # Normalise to 0-1 parametric positions
+  vertex_t <- cum_dist / cum_dist[n_pts]
 
-  # ── Find target distances (every seg_len metres) ─────────────────
-  targets <- seq(0, total_len, by = seg_len)
+  # ── Build each segment inserting original vertices ────────────────
+  segments_list <- lapply(seq_len(n), function(i) {
 
-  # Always include start and end
-  targets[1]            <- 0
-  targets[length(targets)] <- total_len
+    t_from <- starts[i]
+    t_to   <- ends[i]
 
-  # ── For each target distance find the nearest existing vertex ─────
-  snap_indices <- sapply(targets, function(d) {
-    which.min(abs(cum_dist - d))
+    # Find original vertices that fall strictly inside this segment
+    inside <- which(vertex_t >= t_from & vertex_t <= t_to)
+    inside_coords <- coords[inside, , drop = FALSE]
+
+    # Get the start and end points from lwgeom (parametric interpolation)
+    seg      <- lwgeom::st_linesubstring(road, t_from, t_to)
+    seg_ends <- sf::st_coordinates(seg)[, c("X", "Y")]
+    start_pt <- seg_ends[1, , drop = FALSE]
+    end_pt   <- seg_ends[nrow(seg_ends), , drop = FALSE]
+
+    # Combine: start + interior original vertices + end
+    all_coords <- rbind(start_pt, inside_coords, end_pt)
+
+    sf::st_linestring(all_coords)
   })
 
-  # Remove duplicates (can happen if two targets snap to same vertex)
-  snap_indices <- unique(snap_indices)
-
-  # Always include first and last vertex
-  if (snap_indices[1] != 1) snap_indices <- c(1, snap_indices)
-  if (snap_indices[length(snap_indices)] != n_pts) {
-    snap_indices <- c(snap_indices, n_pts)
-  }
-
-  # ── Build segments between consecutive snap points ────────────────
-  segments <- vector("list", length(snap_indices) - 1)
-
-  for (i in seq_len(length(snap_indices) - 1)) {
-    idx_from <- snap_indices[i]
-    idx_to   <- snap_indices[i + 1]
-
-    # Need at least 2 points to make a line
-    if (idx_to <= idx_from) next
-
-    seg_coords <- coords[idx_from:idx_to, , drop = FALSE]
-
-    if (nrow(seg_coords) < 2) next
-
-    segments[[i]] <- sf::st_linestring(seg_coords)
-  }
-
-  # Remove NULLs
-  segments <- segments[!sapply(segments, is.null)]
-
-  if (length(segments) == 0) return(NULL)
-
-  # ── Rebuild as sf with same attributes as input road ──────────────
-  geom_sfc <- sf::st_sfc(segments, crs = sf::st_crs(road))
-
-  road_attr <- sf::st_drop_geometry(road)
-  road_segments <- sf::st_sf(
-    road_attr[rep(1, length(segments)), , drop = FALSE],
-    geometry  = geom_sfc,
-    row.names = NULL
-  )
-
-  return(road_segments)
+  geom_sfc <- sf::st_sfc(segments_list, crs = sf::st_crs(road))
+  sf::st_sf(geometry = geom_sfc)
 }

@@ -37,7 +37,22 @@
 #'   color = c("red", "blue", "green"), map.type = "Esri.WorldImagery")
 #' leaflet::addTiles(m@map, url)
 #' @export
-#'
+
+st_snap_lines = function(roads, ref, tolerance = 30, field = NULL, updatable = NULL)
+{
+  if (missing(ref))
+    return(simple_snap(roads, tolerance))
+
+  if (!missing(ref) & is.null(field))
+    stop("Argument 'field' cannot be NULL if a reference topology is provided", call. = FALSE)
+
+  if (is.null(updatable))
+    updatable <- rep(TRUE, nrow(roads))
+
+  return(advanced_snap(roads, ref, field, tolerance, updatable))
+}
+
+#' @export
 snap_with_duplicate_ids <- function(corrected_roads, existing_roads, field = "OGF_ID", tolerance = 30) {
 
   # ── Step 0: remove NULL / invalid rows ───────────────────────────
@@ -104,20 +119,6 @@ snap_with_duplicate_ids <- function(corrected_roads, existing_roads, field = "OG
   return(result)
 }
 
-
-st_snap_lines = function(roads, ref, tolerance = 30, field = NULL, updatable = NULL)
-{
-  if (missing(ref))
-    return(simple_snap(roads, tolerance))
-
-  if (!missing(ref) & is.null(field))
-    stop("Argument 'field' cannot be NULL if a reference topology is provided", call. = FALSE)
-
-  if (is.null(updatable))
-    updatable <- rep(TRUE, nrow(roads))
-
-  return(advanced_snap(roads, ref, field, tolerance, updatable))
-}
 
 simple_snap <- function(roads, tolerance)
 {

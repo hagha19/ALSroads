@@ -215,7 +215,35 @@ rasterize_conductivity2.LAS <- function(las, dtm = NULL, water = NULL, param = a
   }
 
 
-  return(sigma)
+  # ── NEW: build the same layers_lidar as v4 ────────────────────────
+  # Hillshade from multidirectional illumination (8 azimuths)
+  dtm2    <- terra::rast(raster::aggregate(dtm, fact = 2, fun = mean))
+  slope1  <- terra::terrain(dtm2, v = "slope",  unit = "radians")
+  aspect1 <- terra::terrain(dtm2, v = "aspect", unit = "radians")
+  azimuths <- c(0, 45, 90, 135, 180, 225, 270, 315)
+  shades   <- lapply(azimuths, function(a) {
+    terra::shade(slope = slope1, aspect = aspect1, angle = 45, direction = a)
+  })
+  hillshade <- raster::raster(
+    terra::app(terra::rast(shades), fun = mean, na.rm = TRUE)
+  )
+
+  slope2    <- raster::aggregate(slope,     fact = 2, fun = mean)
+  roughness2 <- raster::aggregate(roughness, fact = 2, fun = mean)
+  chm2      <- raster::aggregate(chm,       fact = 2, fun = mean)
+  d2        <- raster::aggregate(d,         fact = 2, fun = mean)
+
+  # Resample all to hillshade reference grid
+  ref       <- hillshade
+  slope2    <- raster::resample(slope2,    ref)
+  roughness2 <- raster::resample(roughness2, ref)
+  chm2      <- raster::resample(chm2,     ref)
+  d2        <- raster::resample(d2,       ref)
+
+  layers <- raster::stack(ref, slope2, roughness2, chm2, d2)
+  names(layers) <- c("hillshade", "slope", "roughness", "chm", "density")
+
+  return(list(sigma, layers))
 }
 
 #' @export

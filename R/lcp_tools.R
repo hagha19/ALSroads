@@ -38,10 +38,18 @@ least_cost_path = function(las, centerline, dtm, conductivity, water, param,dl_m
       conductivity <- raster::aggregate(conductivity, fact = 2/res, fun = mean, na.rm = TRUE)
   }
 
+  # if (is.character(conductivity) && conductivity == "v2")
+  # {
+  #   verbose("Computing conductivity maps...\n")
+  #   conductivity <- rasterize_conductivity2(las, dtm = dtm, param = param, return_all = FALSE, return_stack = FALSE)
+  # }
+
   if (is.character(conductivity) && conductivity == "v2")
   {
     verbose("Computing conductivity maps...\n")
-    conductivity <- rasterize_conductivity2(las, dtm = dtm, param = param, return_all = FALSE, return_stack = FALSE)
+    result       <- rasterize_conductivity2(las, dtm = dtm, param = param)
+    conductivity <- result[[1]]
+    layers_lidar <- result[[2]]
   }
 
   if (is.character(conductivity) && conductivity == "v3")

@@ -12,6 +12,9 @@ measure_road(
   conductivity = NULL,
   water = NULL,
   param = alsroads_default_parameters,
+  return_all = NULL,
+  return_stack = NULL,
+  dl_model = NULL,
   ...
 )
 
@@ -21,7 +24,11 @@ measure_roads(
   dtm,
   conductivity = NULL,
   water = NULL,
-  param = alsroads_default_parameters
+  param = alsroads_default_parameters,
+  return_all = NULL,
+  return_stack = NULL,
+  dl_model = NULL,
+  ...
 )
 }
 \arguments{
